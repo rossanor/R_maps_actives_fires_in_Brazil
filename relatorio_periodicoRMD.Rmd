@@ -1,0 +1,646 @@
+---
+output: html_document
+---
+[comment]: <> (Autor: Rossano Marchetti Ramos / Data de criação: 15/03/2016)
+![](cabecalho_pagina/cabecalho_pagina.png)
+```{r inicial, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)    # kable
+library(gridExtra) # grid.arrange / 2 ou mais ggplots
+library(colorRamps)
+library(rgdal)
+library(ggplot2)
+library(GISTools) #densidade Kernel
+library(raster) # intersect
+library(spatstat) # as.ppp,density, contour
+library(maps)
+
+setwd("E:/Base de dados/Focos_de_calor/zzz_scriptsR_focos/Monitoramento_periodico_RMARKDOWN")
+
+# abre o arquivo com os shapfiles (Brasil, Brifs, focos 2008 a 2015 (ref)...)
+load("focos_R_2016xmedia_shapefile_focos_2008a2015_carregado.RData")
+
+#
+#       IMPORTANTE
+#
+
+# cria shapes das UCs PI e UCs US
+#UCsUS <- UCs[UCs$SiglaGrupo=="US", ]
+#UCsPI <- UCs[UCs$SiglaGrupo=="PI", ]
+
+#########################################################################
+#      IDENTIFICA OS ARQUIVOS SHAPEFILE QUE SERÃO ABERTOs
+#  ATENCÂo!!!: escolherá os 2 mais recentes, isso pode levar a erros
+arqs_shp <- dir("shp/focos")
+# pega os arquivos shp e ordena por data (portanto os mais recentes primeiro)
+arqs_shp <- sort(arqs_shp[grep(".shp", arqs_shp)], decreasing = TRUE)
+# tira o ".shp" do nome do arquivo
+arqs_shp <- substr(arqs_shp, 1, nchar(arqs_shp)-4)
+# Confere se os arquivos estão corretos, em relação ao período de análise
+if (length(arqs_shp) != 2) {
+  # há mais de 2 arquivos shapefiles na pasta
+  cat("Erro!!! há mais de 2 arquivos shapefiles na pasta.\n\n")
+} else if (substr(arqs_shp[2], 10, 13) != "0101" | 
+           substr(arqs_shp[1], 15, 22) !=  substr(arqs_shp[2], 15, 22)) {
+  # O 2o arquivo não é dos focos acumulados (não começa em 01 de jan)
+  # ou não cobre o período coberto pelo 2o arquivo
+  cat("Erro no periodo contido nos shapefiles apresentados!", 
+      "Ou o shapefile dos focos acumulados não começa em 01/jan (01/01)",
+      "ou a data final dos dados no shapefile do período e do acumulado não é a mesma.",sep="\n")
+}
+
+####################################################################################
+# focos 2016
+f.2016_todos <- readOGR("./shp/focos", arqs_shp[1]) # arquivo do período
+f.2016_acum  <- readOGR("./shp/focos", arqs_shp[2]) # arquivo com acumulado
+
+##########################################################################
+# limpa focos para só ter focos do Brasil
+f.2016_todos <- f.2016_todos[which(f.2016_todos$Pais == "Brasil"), ]
+f.2016_acum  <- f.2016_acum[which(f.2016_acum$Pais == "Brasil"), ]
+
+# só referência
+f.2016      <- f.2016_todos[which(f.2016_todos$Satelite == "AQUA_M-T"), ]
+f.2016_acum <- f.2016_acum[which(f.2016_acum$Satelite == "AQUA_M-T"), ]
+
+##########################################################################
+# altera a projeção para SIRGAS 2000 (ou EPSG:4674)
+f.2016_todos <- spTransform(f.2016_todos, 
+                            "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs")
+f.2016_acum <- spTransform(f.2016_acum, 
+                           "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs")
+f.2016 <- spTransform(f.2016, 
+                      "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs")
+
+##########################################################################
+# período de análise dos focos - localiza pelo nome do arquivo
+analise <- data.frame(dia = c(NA, NA), mes=c(NA, NA)); rownames(analise) <- c("ini", "fim")
+analise["ini", ] <- c(substr(arqs_shp[1], 12, 13),  # dia - inicial
+                      substr(arqs_shp[1], 10, 11))  # mês - inicial
+analise["fim", ] <- c(substr(arqs_shp[1], 21, 22),  # dia - final
+                      substr(arqs_shp[1], 19, 20))  # mês - final
+
+# texto para gráfios
+periodo.analise <- paste(analise["ini", "dia"], "/", analise["ini", "mes"], " a ",
+                         analise["fim", "dia"], "/", analise["fim", "mes"], sep="")
+
+###########################################################################
+#    Seleciona o periodo para os outros anos
+ini <- as.numeric(paste(2008:2015, analise["ini","mes"], analise["ini","dia"], sep=""))
+fim <- as.numeric(paste(2008:2015, analise["fim","mes"], analise["fim","dia"], sep=""))
+# acumulado (de 01/01 ao período final dos shapes)
+f.2008a2015_acum <- f.2008a2015[
+               (f.2008a2015$Data >= 20080101 & f.2008a2015$Data <= fim[1]) |
+               (f.2008a2015$Data >= 20090101 & f.2008a2015$Data <= fim[2]) |
+               (f.2008a2015$Data >= 20100101 & f.2008a2015$Data <= fim[3]) |
+               (f.2008a2015$Data >= 20110101 & f.2008a2015$Data <= fim[4]) |
+               (f.2008a2015$Data >= 20120101 & f.2008a2015$Data <= fim[5]) |
+               (f.2008a2015$Data >= 20130101 & f.2008a2015$Data <= fim[6]) |
+               (f.2008a2015$Data >= 20140101 & f.2008a2015$Data <= fim[7]) |
+               (f.2008a2015$Data >= 20150101 & f.2008a2015$Data <= fim[8]),]
+# período (igual ao período do shapefile identificado como o periodo de análise)
+f.2008a2015 <- f.2008a2015[
+               (f.2008a2015$Data >= ini[1] & f.2008a2015$Data <= fim[1]) |
+               (f.2008a2015$Data >= ini[2] & f.2008a2015$Data <= fim[2]) |
+               (f.2008a2015$Data >= ini[3] & f.2008a2015$Data <= fim[3]) |
+               (f.2008a2015$Data >= ini[4] & f.2008a2015$Data <= fim[4]) |
+               (f.2008a2015$Data >= ini[5] & f.2008a2015$Data <= fim[5]) |
+               (f.2008a2015$Data >= ini[6] & f.2008a2015$Data <= fim[6]) |
+               (f.2008a2015$Data >= ini[7] & f.2008a2015$Data <= fim[7]) |
+               (f.2008a2015$Data >= ini[8] & f.2008a2015$Data <= fim[8]),]
+
+# acrescenta campo ano
+f.2008a2015_acum$ano <- substr(f.2008a2015_acum$Data, 1, 4)
+f.2008a2015$ano <- substr(f.2008a2015$Data, 1, 4)
+f.2016$ano <- substr(f.2016$Data, 1, 4)
+f.2016_acum$ano <- substr(f.2016_acum$Data, 1, 4)
+
+######################################################################
+#   Sobre o tamanho das figuras:
+#   O documento word gerado esrtá no formato carta: 21.6 x 27.9
+#
+#   O documento tem margens de 2.54 (em cima em baixo) e 3.18 (nas laterais)
+#   Com isso as figuras só podem ter 15.24 cm (21.6-3.18*2)
+#   Como as dimensões são em polegadas e 1 polegada = 2.54 in 
+#      --> o tamanho máximo da largura das figuras é 6
+```
+
+### 1) Situação geral do país
+#### 1.1) Identificação das áreas atingidas por queimadas entre `r periodo.analise`
+
+```{r FigFocos, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=6, dpi=300}
+# Figura 1: focos todos
+cores <- primary.colors(length(unique(f.2016_todos$Satelite)))
+
+plot(br.rg, axes=TRUE, border="white", cex.main=1, cex.axis=0.7,
+     main = paste(nrow(f.2016_todos) ," focos de calor detectados (todos os satélites)\n entre ",
+                  periodo.analise, "/2016", sep=""))
+plot(f.2016_todos, pch=3, cex=0.5, col=cores[as.numeric(f.2016_todos$Satelite)], add=T)
+legend("bottomright", legend=unique(f.2016_todos$Satelite),
+       col=cores[unique(f.2016_todos$Satelite)],
+       pch=3, cex=0.6, bty="n")
+plot(br.rg, border="gray28", add=T)
+
+# escala: library(maps)
+maps::map.scale(x=-80, y=-30, ratio=FALSE, relwidth=0.2, cex=0.75)
+# seta norte: library(GISTools)
+north.arrow(xb=-77, yb=0, len=1, lab="N")
+```
+
+#### 1.2) Quantidade de Focos de calor detectados entre `r periodo.analise` (Satélite de Referência) em áreas de federais (Terras Indígenas, Assentamentos Rurais e Unidades de Conservação - Proteção Integral e Uso sustentável)
+##
+```{r FigFed, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=3, dpi=300}
+#----------------------------------------------------------------------
+# Figura 2: 
+#           - gráfico de pizza; Qtde em áreas federaisfocos todos
+#           - gráficos de 
+#----------------------------------------------------------------------
+
+# faz a intersecção / pacote raster
+f.UCs  <- intersect(f.2016, UCs)
+f.TIs  <- intersect(f.2016, TIs)
+f.PAs  <- intersect(f.2016, PAs)
+
+###########################################################################
+# 2.1 - gráfico de pizza
+
+f.federais <- data.frame(local=c("Áreas federais", "Outros"),
+                         focos=c(nrow(f.UCs)+nrow(f.TIs)+nrow(f.PAs),
+                                 nrow(f.2016) - (nrow(f.UCs)+nrow(f.TIs)+nrow(f.PAs))))
+
+# para configurar o ggplot
+blank_theme <- theme_minimal()+
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid=element_blank(),
+    axis.ticks = element_blank() 
+  )
+
+graf2.1 <- 
+  ggplot(f.federais, aes(x="", y=focos, fill=local)) +
+  geom_bar(width = 1, stat = "identity") + 
+  coord_polar("y", start=0) +
+  scale_fill_manual(values = c("red4","coral2")) +
+  blank_theme +
+  theme(axis.text.x=element_blank(),
+        legend.position="bottom") +
+  geom_text(aes(y = focos/2 + c(0, cumsum(focos)[-length(focos)]), 
+                label = focos), size=3.7, fontface = "bold")
+
+###########################################################################
+# 2.2 - gráfico de barras
+f.interesse <- data.frame(local=c("TI", "PA", "UC-PI", "UC-US"),
+                          focos=c(nrow(f.TIs), nrow(f.PAs), 
+                                  sum(f.UCs$SiglaGrupo=="PI"),
+                                  sum(f.UCs$SiglaGrupo=="US")))
+graf2.2 <- 
+  ggplot(f.interesse, aes(x = local, y = focos, fill=local)) + 
+  geom_bar(stat = "identity", colour="black") + 
+  xlab("Áreas federais") + ylab("Qtde dos focos de calor (sat. referência)") + 
+  scale_fill_brewer(palette="OrRd") + 
+  theme(legend.position = "none")
+
+# Faz o gráfico 2, com pizza e barras lado a lado
+#multiplot(graf2.1, graf2.2, cols=2)
+grid.arrange(graf2.1, graf2.2, ncol = 2)
+```
+
+### 2) Comparação da quantidade de focos (satélite de referência) detectados este ano com a média para o mesmo período (anos de 1998 a 2015)
+#### 2.1) Comparação anual dos focos de calor detectados no Brasil
+```{r FigQtdeFocos, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=4, dpi=300}
+############################################################################
+#  Fig 3: de barras - focos ~ ano /acumulado no ano e período
+focos_acum <- data.frame(ano = c(f.2008a2015_acum$ano, f.2016_acum$ano), 
+                         periodo=paste("01/01 a ", 
+                                 analise["fim", "dia"], "/", analise["fim", "mes"], sep=""))
+focos_per  <- data.frame(ano = c(f.2008a2015$ano, f.2016$ano),
+                         periodo=paste(analise["ini", "dia"], "/", analise["ini", "mes"], " a ",
+                                       analise["fim", "dia"], "/", analise["fim", "mes"],
+                                       sep=""))
+# une num mesmo dataframe
+focos <- rbind(focos_acum, focos_per)
+
+# gráfico de barras
+ggplot(focos, aes(factor(ano), fill = ano)) + 
+  geom_bar(show.legend = F, colour="black") + 
+  facet_wrap(~periodo, scales = "free_y") +
+  labs(title = "Quantidade de Focos de calor acumulados no ano e período de análise", 
+       x="ano", y="quantidade de focos (sat. ref.)") + 
+  theme(plot.title = element_text(size = 13)) +
+  scale_fill_brewer(palette = "YlOrRd")
+```
+
+#### 2.2) Mapas de densidade de focos de calor (Kernel)
+- No acumulado deste ano (de 01/01 a `r substr(periodo.analise, 9, 13)`)
+```{r FigKernAcum, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=4.2, dpi=300}
+############################################################################
+#  Kernel - Acumulado no ano
+dens.media_acum <- density(as.ppp(f.2008a2015_acum), dimyx = c(512, 512))/8 # média para 8 anos
+dens.2016_acum  <- density(as.ppp(f.2016_acum),      dimyx = c(512, 512))
+
+# calcula os zlimites - mesmos para os dois gráficos
+min.z <- min(c(dens.media_acum$v, dens.2016_acum$v))
+max.z <- max(c(dens.media_acum$v, dens.2016_acum$v))
+
+op <- par(mfrow=c(1, 2), mar=c(1, 1, 0, 2), oma=c(0,0,2,0), cex.main=0.8)
+
+# média 2008 a 2015
+plot(br.rg, main = paste("\n\n(01/01 a ",
+                         substr(periodo.analise,9,13), " - média de 2008 a 2015)", sep=""))
+plot(dens.media_acum, main = "", add=T, show.all= T, zlim = c(min.z, max.z))
+contour(dens.media_acum, add=T)
+plot(br.rg, add=T)
+
+# 2016
+plot(br.rg, main = paste("\n\n(01/01 a ",
+                         substr(periodo.analise,9,13), "/2016)", sep=""))
+plot(dens.2016_acum, main = "", add=T, show.all= T, zlim = c(min.z, max.z))
+contour(dens.2016_acum, add=T)
+plot(br.rg, add=T)
+
+mtext("Densidade de Focos de calor", outer = TRUE, font=2, cex = 1)
+
+par(op)
+```
+
+- No período de `r periodo.analise`
+```{r FigKernPer, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=4.2, dpi=300}
+################################################
+# período
+dens.media <- density(as.ppp(f.2008a2015), dimyx = c(512, 512))/8 # média para 8 anos
+dens.2016  <- density(as.ppp(f.2016),      dimyx = c(512, 512))
+
+# calcula os zlimites - mesmos para os dois gráficos
+min.z <- min(c(dens.media$v, dens.2016$v))
+max.z <- max(c(dens.media$v, dens.2016$v))
+
+op <- par(mfrow=c(1, 2), mar=c(0.2, 1, 0, 2), oma=c(0,0,2,0), cex.main=0.8)
+
+# média 2008 a 2015
+plot(br.rg, main = paste("\n\n(" ,periodo.analise, " - média de 2008 a 2015)", sep=""))
+plot(dens.media, main = "", add=T, show.all= T, zlim = c(min.z, max.z))
+contour(dens.media, add=T)
+plot(br.rg, add=T)
+
+# 2016
+plot(br.rg, main = paste("\n\n(" ,periodo.analise, "/2016)", sep=""))
+plot(dens.2016, main = "", add=T, show.all= T, zlim = c(min.z, max.z))
+contour(dens.2016, add=T)
+plot(br.rg, add=T)
+
+mtext("Densidade de Focos de calor", outer = TRUE, font=2, cex = 1)
+
+par(op)
+```
+
+#### 2.3) Comparação por estado da quantidade de focos de calor detectados
+- No acumulado do ano (de 01/01 a `r substr(periodo.analise, 9, 13)`)
+```{r FigUFAcum, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=4.2, dpi=300}
+# Focos em UF - Acumulado
+
+# cria o dataframe
+uf_acum <- data.frame(Uf = unique(c(as.character(f.2008a2015$Uf), as.character(f.2016$Uf))),
+                      'fmedia' = NA,
+                      'f2016' = NA)
+uf_acum$Uf <- as.character(uf_acum$Uf)
+# retira indeterminado 
+uf_acum <- uf_acum[uf_acum$Uf != "Indeterminado", ]
+
+# calcula qtos focos por estado para cada ano
+uf_acum$fmedia <- sapply(uf_acum$Uf, 
+                         function(x) {sum(as.character(f.2008a2015_acum$Uf)==x)/8})
+uf_acum$f2016 <- sapply(uf_acum$Uf, 
+                        function(x) {sum(as.character(f.2016_acum$Uf)==x)})
+
+# reorganiza o dataframe
+uf_acum <- data.frame(Uf = c(uf_acum$Uf, uf_acum$Uf), # copia 2x a UF
+                       ano = c(rep("2008 a 2015/media", nrow(uf_acum)), 
+                               rep("2016", nrow(uf_acum))),
+                       focos = c(uf_acum$fmedia, uf_acum$f2016))
+
+uf_acum <- uf_acum[order(uf_acum$ano, uf_acum$Uf), ]
+# focos 2015
+tot.media <- sum(uf_acum$focos[uf_acum$ano == "2008 a 2015/media"])
+# focos 2015
+tot.2016 <- sum(uf_acum$focos[uf_acum$ano == "2016"])
+#calcula porcentagem
+uf_acum$porcent.ano <- NA
+uf_acum$porcent.ano[uf_acum$ano == "2008 a 2015/media"] <- 
+  100*uf_acum$focos[uf_acum$ano == "2008 a 2015/media"]/tot.media
+uf_acum$porcent.ano[uf_acum$ano == "2016"] <- 
+  100*uf_acum$focos[uf_acum$ano == "2016"]/tot.2016
+
+# GRAFICO: QTDE FOCOS
+graf.focos <- ggplot(uf_acum, aes(x = Uf, y = focos, fill=as.factor(ano))) + 
+  geom_bar(stat = "identity", position=position_dodge(), colour="black") +
+  xlab("Estado") + ylab("Qtde dos focos de calor por UF  (sat. ref.)") + 
+  scale_fill_manual(name="Ano", values=c("yellow","red3")) +
+  ggtitle(paste("Focos e calor detectados entre 01/01 a", 
+                substr(periodo.analise,9,13), sep=" ")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5), legend.position="bottom")
+graf.focos
+```
+- No período de `r periodo.analise`
+```{r FigUFPer, echo=FALSE, fig.align='center', fig.width= 7.1, fig.height=4.2, dpi=300}
+# focos em UF - período
+
+# cria o dataframe
+uf_per <- data.frame(Uf = unique(c(as.character(f.2008a2015$Uf), as.character(f.2016$Uf))),
+                     'fmedia' = NA, 'f2016' = NA)
+uf_per$Uf <- as.character(uf_per$Uf)
+# retira indeterminado 
+uf_per <- uf_per[uf_per$Uf != "Indeterminado", ]
+
+# calcula qtos focos por estado para cada ano
+uf_per$fmedia <- sapply(uf_per$Uf, function(x) {sum(as.character(f.2008a2015$Uf)==x)/8})
+uf_per$f2016 <- sapply(uf_per$Uf, function(x) {sum(as.character(f.2016$Uf)==x)})
+
+# reorganiza o dataframe
+uf_per <- data.frame(Uf = c(uf_per$Uf, uf_per$Uf),
+                              ano = c(rep("2008 a 2015/media", nrow(uf_per)), rep("2016", nrow(uf_per))),
+                              focos = c(uf_per$fmedia, uf_per$f2016))
+uf_per <- uf_per[order(uf_per$ano, uf_per$Uf), ]
+# focos 2015
+tot.media <- sum(uf_per$focos[uf_per$ano == "2008 a 2015/media"])
+# focos 2015
+tot.2016 <- sum(uf_per$focos[uf_per$ano == "2016"])
+#calcula porcentagem
+uf_per$porcent.ano <- NA
+uf_per$porcent.ano[uf_per$ano == "2008 a 2015/media"] <- 
+  100*uf_per$focos[uf_per$ano == "2008 a 2015/media"]/tot.media
+uf_per$porcent.ano[uf_per$ano == "2016"] <- 
+  100*uf_per$focos[uf_per$ano == "2016"]/tot.2016
+
+# GRAFICO: QTDE FOCOS
+graf.focos <- ggplot(uf_per, aes(x = Uf, y = focos, fill=as.factor(ano))) + 
+  geom_bar(stat = "identity", position=position_dodge(), colour="black") +
+  xlab("Estado") + ylab("Qtde dos focos de calor por UF  (sat. referência)") + 
+  scale_fill_manual(name="Ano", values=c("yellow","red3")) +
+  ggtitle(paste("Focos e calor detectados entre", periodo.analise, sep=" ")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5), legend.position="bottom")
+graf.focos
+```
+
+#### 2.4) Municípios mais atingidos por queimadas e incêndios florestais
+- Quantidade de focos de calor (sat. ref.) detectados nos municípios no acumulado do ano e no período de análise (20 com mais ocorrências)
+```{r TabMunic, echo=FALSE, warning=FALSE}
+###############################################################
+# Cria funções necessárias
+# cria uma função para contar a qtde de casos (municípios) num vetor
+contar <- function(indice) {
+  # transforma de 'factor' para 'character'
+  if (is.factor(indice)) {
+    indice <- as.character(indice)
+  }
+  # calcula a qtde
+  result <- data.frame(table(indice))
+  result$indice <- as.character(result$indice)
+  
+  # retorna o resultado em ordem decrescente de "qtde"
+  result[order(-result$Freq, result$indice), ]
+}
+
+# completa com espaços um dataframe
+completar <- function(alvo, limite=20) {
+  # verifica se tem menos que 20 entradas no data.frame
+  if(nrow(alvo) < limite) { 
+    # completa a matriz com " "
+    alvo <- data.frame(rbind(as.matrix(alvo),
+                             matrix(rep(" ", (limite-nrow(alvo))*ncol(alvo)), 
+                                    ncol=ncol(alvo))))
+  }
+  # retorna até o limite máximo estabelecido ()
+  return(alvo[1:limite, ]) 
+}
+
+
+###############################################################
+# Acumulado + Período
+
+# calcula os totais 
+mun_acum <- contar(paste(f.2016_acum$Municipio, f.2016_acum$Uf, sep="-"))
+mun_per <- contar(paste(f.2016$Municipio, f.2016$Uf, sep="-"))
+
+# transforma tudo em caracter
+mun_acum$indice <- as.character(mun_acum$indice)
+mun_acum$Freq   <- as.character(mun_acum$Freq)
+
+mun_per$indice <- as.character(mun_per$indice)
+mun_per$Freq   <- as.character(mun_per$Freq)
+
+# verifica se tem menos que 20 municípios com focos e completa com espaços
+mun_acum <- completar(mun_acum)
+mun_per  <- completar(mun_per)
+
+# cria um dataframe juntando as 2 tabelas
+municipios <- data.frame(mun1 = mun_acum$indice,
+                         foc1 = mun_acum$Freq,
+                         separa1 = " ",
+                         separa2 = " ",
+                         mun2 = mun_per$indice,
+                         foc2 = mun_per$Freq)
+
+# cria uma tabela do markdown; com os 20 municípios com mais fogo
+kable(municipios, col.names = c("Município",
+                                paste("Qtde focos (01/01 a ", substr(periodo.analise,9,13), ")",
+                                      sep=""), " ", " ",
+                                "Município",
+                                paste("Qtde focos (", periodo.analise,")", sep="")),
+                                row.names=F,align=c("l","r","c","c","l","r"))
+```
+
+### 3) Detecção de focos nas áreas federais
+#### 3.1) Áreas Federais com Brifgadas Prevfogo/Ibama (BRIFs)
+- Focos nas áreas das BRIFs no período de `r periodo.analise`
+```{r BrifAtingidaGraf, echo=FALSE, warning=FALSE, fig.align='center', fig.width= 7.1, fig.height=4.2, dpi=300}
+##################################################################################
+##################################################################################
+##
+##    Focos nas BRIFs - Gráfico e tabela
+##
+##################################################################################
+##################################################################################
+
+# faz a intersecção
+f.brif      <- intersect(f.2016, brif2015)
+f.brif_acum <- intersect(f.2016_acum, brif2015)
+
+#--------------------------------------------
+# faz a tabela das áreas com focos
+#--------------------------------------------
+detec_per  <- contar(paste(f.brif$local, f.brif$uf, sep="-"))
+detec_acum <- contar(paste(f.brif_acum$local, f.brif_acum$uf, sep="-"))
+
+# TRansforma em 'character' e substitui '_' por espaço -' '
+detec_per$indice  <- gsub("_", " ", detec_per$indice)
+detec_acum$indice <- gsub("_", " ", detec_acum$indice)
+
+# refaz o 'factor' e mantém a ordem de qtde (inversa)
+detec_per$indice <- factor(detec_per$indice, 
+                           levels = detec_per$indice,
+                           ordered = T)
+detec_acum$indice <- factor(detec_acum$indice, 
+                            levels = detec_acum$indice,
+                            ordered = T)
+
+###################################
+# GRAFICO: QTDE FOCOS
+
+# variável auxiliar para só conter os 20 primeiros registros
+if (nrow(detec_per) > 15) {
+  detec_aux <- detec_per[1:15,]
+} else {
+  detec_aux <- detec_per
+} 
+
+graf.brif <- 
+  ggplot(detec_aux, # com as 15 primeiras ocorrencias
+         aes(x = indice, y = Freq, fill=indice)) + 
+  geom_bar(stat = "identity", position=position_dodge(), colour="black") +
+  xlab("BRIF 2015") + ylab("Focos de calor (sat. ref.)") +
+  ggtitle(paste("Focos de calor nas áreas com brigadas federais/Ibama (", 
+                periodo.analise,")", sep="")) +
+  theme(axis.title.x = element_blank(),
+        legend.position = "none",
+        axis.text.x = element_text(size  = 10,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1))
+graf.brif + scale_fill_manual(values=heat.colors(nrow(detec_per)))
+
+```
+
+- Focos nas áreas das BRIFs no acumulado do ano e no período de `r periodo.analise` 
+
+```{r BrifAtingidaTab, echo=FALSE, warning=FALSE}
+##################################################################################
+#  Faz a tabela
+
+detec_acum$indice <- as.character(detec_acum$indice)
+detec_acum$Freq   <- as.character(detec_acum$Freq)
+
+detec_per$indice <- as.character(detec_per$indice)
+detec_per$Freq   <- as.character(detec_per$Freq)
+
+# LImita a lista a 30 valores
+detec_per  <- completar(detec_per, 30)
+detec_acum <- completar(detec_acum, 30)
+
+# cria um dataframe juntando as 2 tabelas
+deteccoes <- data.frame(loc1 = detec_acum$indice,
+                        foc1 = detec_acum$Freq,
+                        separa1 = "   ",
+                        separa2 = "   ",
+                        loc2 = detec_per$indice,
+                        foc2 = detec_per$Freq)
+
+# cria uma tabela do markdown; com os 30 municípios com mais fogo
+kable(deteccoes, col.names = c("Local", 
+                               paste("Qtde Focos (01/01 a ", substr(periodo.analise,9,13), ")",
+                                     sep=""), 
+                               " ", " ", "Local",
+                               paste("Qtde Focos (", periodo.analise,")", sep="")), row.names=F)
+```
+
+#### 3.2) Focos de calor em Unidades de Conservação Federais de Proteção Integral e Uso sustentável de `r periodo.analise` (20 com mais ocorrências)
+
+```{r UCAtingidaTab, echo=FALSE, warning=FALSE}
+
+##################################################################################
+##################################################################################
+##
+##    Focos nas UCs PI - tabela
+##
+##################################################################################
+##################################################################################
+
+# identifica as UCs de PI
+f.UCsPI <- f.UCs[f.UCs$SiglaGrupo=="PI",]
+f.UCsUS <- f.UCs[f.UCs$SiglaGrupo=="US",]
+
+UCsPI_per <- contar(paste(f.UCsPI$nome, f.UCsPI$UF, sep="-"))
+UCsUS_per <- contar(paste(f.UCsUS$nome, f.UCsUS$UF, sep="-"))
+
+
+# transforma tudo em caracter
+UCsPI_per$indice <- as.character(UCsPI_per$indice)
+UCsPI_per$Freq   <- as.character(UCsPI_per$Freq)
+
+UCsUS_per$indice <- as.character(UCsUS_per$indice)
+UCsUS_per$Freq   <- as.character(UCsUS_per$Freq)
+
+# máximo 20 valores
+UCsPI_per <- completar(UCsPI_per)
+UCsUS_per <- completar(UCsUS_per)
+
+# cria um dataframe juntando as 2 tabelas
+UCs_per <- data.frame(UC1  = UCsPI_per$indice,
+                      foc1 = UCsPI_per$Freq,
+                      separa1 = " ",
+                      UC2 = UCsUS_per$indice,
+                      foc2 = UCsUS_per$Freq)
+
+# cria uma tabela do markdown; com os 20 municípios com mais fogo
+kable(UCs_per, col.names = c("Unidades de Conservação (PI)", "Qtde focos", " ",
+                             "Unidades de Conservação (US)", "Qtde focos"),
+      row.names=F,align=c("l","r","c","l","r"))
+```
+
+#### 3.3) Focos de calor em Terras Indígenas e Assentamentos Rurais de `r periodo.analise` (20 com mais ocorrências)
+
+```{r TIePAAtingidaTab, echo=FALSE, warning=FALSE}
+##################################################################################
+##################################################################################
+##
+##    Focos nas Terras Indígenas e Assentamentos Rurais - tabela
+##
+##################################################################################
+##################################################################################
+# identifica as UCs de PI
+TIs_per <- contar(paste("TI ", f.TIs$terrai_nom,"-", f.TIs$uf_sigla, sep=""))
+PAs_per <- contar(paste(f.PAs$NOMEPROJ3, f.PAs$Uf, sep="-"))
+
+# transforma tudo em caracter
+TIs_per$indice <- as.character(TIs_per$indice)
+TIs_per$Freq   <- as.character(TIs_per$Freq)
+
+PAs_per$indice <- as.character(PAs_per$indice)
+PAs_per$Freq   <- as.character(PAs_per$Freq)
+
+# máximo 20 valores
+TIs_per <- completar(TIs_per)
+PAs_per <- completar(PAs_per)
+
+# cria um dataframe juntando as 2 tabelas
+Areas_fed <- data.frame(TI   = TIs_per$indice,
+                        foc1 = TIs_per$Freq,
+                        separa1 = " ",
+                        PA = PAs_per$indice,
+                        foc2 = PAs_per$Freq)
+
+# cria uma tabela do markdown; com os 20 municípios com mais fogo
+kable(Areas_fed, col.names = c("Terras Indígenas", "Qtde focos", " ",
+                               "Assentamentos Rurais", "Qtde focos"),
+      row.names=F,align=c("l","r","c","l","r"))
+
+
+
+```
+
+### 4) Informações sobre o clima (informações sugeridas)
+
+[Risco de fogo e meteorologia/Inpe](http://www.inpe.br/queimadas/abasFogo.php)
+
+
+[Previsão climática/Inpe](http://clima1.cptec.inpe.br/)
+
+[Precipitação acumulada/Inmet](http://www.inmet.gov.br/portal/index.php?r=tempo2/mapasPrecipitacao)
+
+[Previsão de precipitação futura/Inmet](http://www.inmet.gov.br/vime/)
+
+[Portal do Inmet](http://www.inmet.gov.br)
+
+
+
